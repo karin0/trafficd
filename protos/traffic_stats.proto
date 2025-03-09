@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package traffic.proto;
+
+message Row {
+  uint64 tid = 1;
+  uint64 time = 2;
+  uint64 tx = 3;
+  uint64 rx = 4;
+}
+
+message User {
+  uint32 uid = 1;
+  string name = 2;
+  uint64 month_sum = 3;
+}
+
+message TrafficStats {
+  repeated Row rows = 1;
+  repeated User users = 2;
+}
