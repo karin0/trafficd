@@ -10,7 +10,7 @@ build = "build.rs"
 [dependencies]
 actix-web = "4"
 sqlx = { version = "0.8", features = ["sqlite", "macros", "runtime-tokio"] }
-prost = "0.13"
+prost = "0.14.1"
 log = "0.4"
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }
@@ -26,7 +26,7 @@ time = "0.3"
 pretty_env_logger = { git = "https://github.com/karin0/pretty-env-logger.git" }
 
 [build-dependencies]
-prost-build = "0.13"
+prost-build = "0.14.1"
 
 [profile.release]
 strip = true

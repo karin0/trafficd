@@ -9,10 +9,10 @@ use actix_web::web::{self, Data, Json};
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, guard, middleware};
 use anyhow::Result;
 use clap::Parser;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use prost::Message;
 use serde::Deserialize;
-use sqlx::query_as;
+use sqlx::{Error::RowNotFound, query_as, query_scalar};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
 
@@ -56,19 +56,21 @@ fn mapper(e: sqlx::Error) -> error::Error {
     error::ErrorInternalServerError(e)
 }
 
-async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Responder> {
-    info!("request: since = {}", req.since);
-
+async fn kick(chan: &mpsc::Sender<oneshot::Sender<bool>>) -> error::Result<()> {
     let (tx, rx) = oneshot::channel();
-    data.chan
-        .send(tx)
+    chan.send(tx)
         .await
         .map_err(error::ErrorInternalServerError)?;
     let lark_ok = rx.await.map_err(error::ErrorInternalServerError)?;
     if !lark_ok {
         error!("lark worker failed on the request");
     }
+    Ok(())
+}
 
+async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Responder> {
+    info!("request: since = {}", req.since);
+    kick(&data.chan).await?;
     let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
 
     let rows = query_as!(
@@ -117,6 +119,32 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
     let resp = stats.encode_to_vec();
     debug!("encoded into {} bytes", resp.len());
     Ok(HttpResponse::Ok().body(resp))
+}
+
+#[actix_web::get("/{uid}")]
+async fn query_sum(req: web::Path<u32>, data: Data<AppProps>) -> error::Result<impl Responder> {
+    let uid = req.into_inner();
+    info!("query sum for uid {}", uid);
+    kick(&data.chan).await?;
+    let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
+
+    match query_scalar!("SELECT sum FROM Month WHERE uid = ? LIMIT 1", uid)
+        .fetch_one(&mut conn)
+        .await
+    {
+        Err(RowNotFound) => {
+            warn!("uid {} not found", uid);
+            Ok(HttpResponse::Ok().body("0"))
+        }
+        Err(e) => {
+            error!("query {}: {:?}", uid, e);
+            Err(mapper(e))
+        }
+        Ok(sum) => {
+            info!("uid {} has sum {}", uid, sum);
+            Ok(HttpResponse::Ok().body(format!("{}", sum)))
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -215,7 +243,7 @@ async fn entry() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .wrap(cors)
             .app_data(data.clone())
-            .service(scope.route("", web::post().to(index)))
+            .service(scope.route("", web::post().to(index)).service(query_sum))
     })
     .workers(1);
 

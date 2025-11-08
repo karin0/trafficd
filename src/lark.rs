@@ -253,12 +253,12 @@ async fn refresh(
         0
     };
     if month != last_month {
-        let r = query!("UPDATE Month SET sum = 0")
+        let r = query!("DELETE FROM Month")
             .execute(&mut ctx.conn)
             .await?
             .rows_affected();
         warn!(
-            "refresh: month changed from {} to {}, reset {} rows",
+            "refresh: month changed from {} to {}, deleted {} rows",
             last_month, month, r
         );
     } else {

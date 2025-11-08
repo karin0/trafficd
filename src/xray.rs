@@ -34,7 +34,7 @@ pub async fn query(server: &str, reset: bool) -> Result<Stats> {
 }
 
 impl Stats {
-    pub fn iter(&self) -> impl Iterator<Item = Stat> {
+    pub fn iter(&self) -> impl Iterator<Item = Stat<'_>> {
         self.0.iter().filter(|s| s.value != 0).map(|s| {
             /*
             {
