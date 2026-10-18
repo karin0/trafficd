@@ -4,7 +4,7 @@ use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection, query, query_scalar};
 use time::{OffsetDateTime, UtcOffset};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::{Duration, Instant, sleep, timeout};
 
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::time::SystemTime;
@@ -21,9 +21,13 @@ fn encode_tid(uid: u32, kind: u8) -> u64 {
     ((uid as u64) << 8) | kind as u64
 }
 
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Traffic by tid, fetched with its counters reset and not committed yet
+type Pending = BTreeMap<u64, (u64, u64)>;
+
 #[derive(Debug)]
 struct RefreshContext {
-    conn: SqliteConnection,
     time: u64,
     last_time: u64,
     reset: bool,
@@ -34,14 +38,17 @@ struct RefreshContext {
 }
 
 impl RefreshContext {
-    async fn update(&mut self, tid: u64, tx: u64, rx: u64) -> Result<()> {
+    async fn update(
+        &mut self,
+        conn: &mut SqliteConnection,
+        tid: u64,
+        tx: u64,
+        rx: u64,
+    ) -> Result<()> {
         if tx == 0 && rx == 0 {
             self.stat_skipped += 1;
             return Ok(());
         }
-
-        // Start a transaction
-        let mut trx = self.conn.begin().await?;
 
         let time: i64 = self.time.try_into().unwrap();
         let tid: i64 = tid.try_into().unwrap();
@@ -53,7 +60,7 @@ impl RefreshContext {
             // Query Last by tid
             let tid_last_time: u64 =
                 query_scalar!("SELECT time FROM Last WHERE tid = ? LIMIT 1", tid)
-                    .fetch_optional(&mut *trx)
+                    .fetch_optional(&mut *conn)
                     .await?
                     .map(|x| x.try_into().unwrap())
                     .unwrap_or(0);
@@ -72,7 +79,7 @@ impl RefreshContext {
                     tid,
                     last_time,
                 )
-                .execute(&mut *trx)
+                .execute(&mut *conn)
                 .await?;
             }
         }
@@ -84,7 +91,7 @@ impl RefreshContext {
             tid,
             time,
         )
-        .execute(&mut *trx)
+        .execute(&mut *conn)
         .await?;
 
         // Insert Record
@@ -96,10 +103,9 @@ impl RefreshContext {
             itx,
             irx,
         )
-        .execute(&mut *trx)
+        .execute(&mut *conn)
         .await?;
 
-        trx.commit().await?;
         self.stat_updated += 1;
         self.stat_tx += tx;
         self.stat_rx += rx;
@@ -111,7 +117,7 @@ impl RefreshContext {
         server: &str,
         name_map: &BTreeMap<&str, u32>,
     ) -> Result<impl Iterator<Item = (u32, u64, u64)> + use<>> {
-        let res = xray::query(server, self.reset).await?;
+        let res = timeout(FETCH_TIMEOUT, xray::query(server, self.reset)).await??;
         debug!("refresh_xray: got {:?}", res);
 
         let mut map: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
@@ -150,7 +156,7 @@ impl RefreshContext {
         src: &'a hysteria::Source,
         uid_map: &'a BTreeMap<&str, u32>,
     ) -> Result<impl Iterator<Item = (u32, u64, u64)> + use<'a>> {
-        let res = src.traffic(self.reset).await?;
+        let res = timeout(FETCH_TIMEOUT, src.traffic(self.reset)).await??;
         debug!("refresh_hysteria: got {:?}", res);
 
         Ok(res.into_iter().flat_map(|(user, traffic)| {
@@ -166,45 +172,43 @@ impl RefreshContext {
                 })
         }))
     }
+}
 
-    async fn try_update<T: Iterator<Item = (u32, u64, u64)>>(
-        &mut self,
-        traffic: Result<T>,
-        title: &'static str,
-        kind: u8,
-        uid_sum: &mut BTreeMap<u32, u64>,
-    ) -> Result<bool> {
-        match traffic {
-            Ok(traffic) => {
-                for (uid, tx, rx) in traffic {
-                    self.update(encode_tid(uid, kind), tx, rx).await?;
-                    match uid_sum.entry(uid) {
-                        Entry::Vacant(e) => {
-                            e.insert(tx + rx);
-                        }
-                        Entry::Occupied(mut e) => {
-                            *e.get_mut() += tx + rx;
-                        }
-                    }
-                }
-                Ok(true)
+fn collect<T: Iterator<Item = (u32, u64, u64)>>(
+    pending: &mut Pending,
+    traffic: Result<T>,
+    title: &'static str,
+    kind: u8,
+) -> bool {
+    match traffic {
+        Ok(traffic) => {
+            for (uid, tx, rx) in traffic {
+                let (ptx, prx) = pending.entry(encode_tid(uid, kind)).or_default();
+                *ptx += tx;
+                *prx += rx;
             }
-            Err(e) => {
-                error!("Failed to refresh {}: {}", title, e);
-                Ok(false)
-            }
+            true
+        }
+        Err(e) => {
+            error!("Failed to refresh {}: {}", title, e);
+            false
         }
     }
+}
+
+struct Sources<'a> {
+    xray: &'a str,
+    xray_map: BTreeMap<&'a str, u32>,
+    hysteria: hysteria::Source,
+    hysteria_map: BTreeMap<&'a str, u32>,
 }
 
 async fn refresh(
     tz: UtcOffset,
     db_url: &str,
-    name_map: &BTreeMap<&str, u32>,
-    xray: &str,
-    hys: &hysteria::Source,
-    hys_map: &BTreeMap<&str, u32>,
+    src: &Sources<'_>,
     reset: bool,
+    pending: &mut Pending,
 ) -> Result<()> {
     let begin = Instant::now();
     let mut conn = connect(db_url, false).await?;
@@ -226,7 +230,6 @@ async fn refresh(
     }
 
     let mut ctx = RefreshContext {
-        conn,
         time,
         last_time,
         reset,
@@ -237,10 +240,18 @@ async fn refresh(
     };
 
     let (xray, hysteria) = tokio::join!(
-        ctx.refresh_xray(xray, name_map),
-        ctx.refresh_hysteria(hys, hys_map)
+        ctx.refresh_xray(src.xray, &src.xray_map),
+        ctx.refresh_hysteria(&src.hysteria, &src.hysteria_map)
     );
     let fetch_dt = begin.elapsed().as_millis();
+
+    // The counters are reset by now, so pending keeps the traffic until the
+    // transaction below commits
+    let xray_ok = collect(pending, xray, "xray", KIND_XRAY);
+    let hysteria_ok = collect(pending, hysteria, "hysteria", KIND_HYSTERIA);
+    let ok = xray_ok && hysteria_ok;
+
+    let mut trx = conn.begin().await?;
 
     let month: u8 = dt.month().into();
     let last_month = if last_time > 0 {
@@ -254,7 +265,7 @@ async fn refresh(
     };
     if month != last_month {
         let r = query!("DELETE FROM Month")
-            .execute(&mut ctx.conn)
+            .execute(&mut *trx)
             .await?
             .rows_affected();
         warn!(
@@ -265,21 +276,21 @@ async fn refresh(
         trace!("refresh: month is still {}", month);
     }
 
-    let mut sum = BTreeMap::new();
-    let ok = ctx.try_update(xray, "xray", KIND_XRAY, &mut sum).await?
-        && ctx
-            .try_update(hysteria, "hysteria", KIND_HYSTERIA, &mut sum)
-            .await?;
+    let mut sum: BTreeMap<u64, u64> = BTreeMap::new();
+    for (&tid, &(tx, rx)) in pending.iter() {
+        ctx.update(&mut trx, tid, tx, rx).await?;
+        *sum.entry(tid >> 8).or_default() += tx + rx;
+    }
 
     for (uid, sum) in sum {
-        let uid = uid as i32;
+        let uid = uid as i64;
         let sum = sum as i64;
         query!(
             "INSERT INTO Month (uid, sum) VALUES (?, ?) ON CONFLICT(uid) DO UPDATE SET sum = sum + excluded.sum",
             uid,
             sum,
         )
-        .execute(&mut ctx.conn)
+        .execute(&mut *trx)
         .await?;
     }
 
@@ -290,9 +301,12 @@ async fn refresh(
             "INSERT OR REPLACE INTO Meta (id, time) VALUES (0, ?)",
             itime
         )
-        .execute(&mut ctx.conn)
+        .execute(&mut *trx)
         .await?;
     }
+
+    trx.commit().await?;
+    pending.clear();
 
     let dt = begin.elapsed().as_millis();
     log!(
@@ -327,23 +341,17 @@ pub async fn worker(
 ) {
     let delay_millis = interval as u64 * 1000;
 
-    let name_map = BTreeMap::from_iter(users.iter().map(|u| (u.name.as_str(), u.uid)));
-    let hys = hysteria::Source::new(config.hysteria);
-    let hys_uid_map = BTreeMap::from_iter(users.iter().map(|u| (u.hysteria_user(), u.uid)));
+    let src = Sources {
+        xray: &config.xray.server,
+        xray_map: BTreeMap::from_iter(users.iter().map(|u| (u.name.as_str(), u.uid))),
+        hysteria: hysteria::Source::new(config.hysteria),
+        hysteria_map: BTreeMap::from_iter(users.iter().map(|u| (u.hysteria_user(), u.uid))),
+    };
     let mut last_tx: Option<oneshot::Sender<bool>> = None;
+    let mut pending = Pending::new();
 
     loop {
-        let ok = if let Err(e) = refresh(
-            tz,
-            &db_url,
-            &name_map,
-            &config.xray.server,
-            &hys,
-            &hys_uid_map,
-            reset,
-        )
-        .await
-        {
+        let ok = if let Err(e) = refresh(tz, &db_url, &src, reset, &mut pending).await {
             error!("failed to refresh: {}", e);
             false
         } else {
