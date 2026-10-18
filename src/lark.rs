@@ -314,11 +314,11 @@ async fn refresh(
 pub struct Config {
     pub xray: crate::xray::Config,
     pub hysteria: crate::hysteria::Config,
-    pub tz: Option<(i8, i8, i8)>,
 }
 
 pub async fn worker(
     users: &[User],
+    tz: UtcOffset,
     db_url: String,
     mut chan: mpsc::Receiver<oneshot::Sender<bool>>,
     interval: u16,
@@ -331,12 +331,6 @@ pub async fn worker(
     let hys = hysteria::Source::new(config.hysteria);
     let hys_uid_map = BTreeMap::from_iter(users.iter().map(|u| (u.hysteria_user(), u.uid)));
     let mut last_tx: Option<oneshot::Sender<bool>> = None;
-
-    let tz = match config.tz {
-        Some((h, m, s)) => UtcOffset::from_hms(h, m, s).unwrap(),
-        None => UtcOffset::current_local_offset().unwrap(),
-    };
-    info!("using timezone {}", tz);
 
     loop {
         let ok = if let Err(e) = refresh(

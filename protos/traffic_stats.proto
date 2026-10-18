@@ -14,7 +14,17 @@ message User {
   string name = 2;
 }
 
+// A calendar month or year in the timezone of trafficd
+message Period {
+  int32 year = 1;
+  // 1 to 12, or 0 for the whole year
+  uint32 month = 2;
+  int64 since = 3;
+  int64 until = 4;
+}
+
 message TrafficStats {
   repeated Row rows = 1;
   repeated User users = 2;
+  Period period = 3;
 }

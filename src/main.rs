@@ -13,6 +13,7 @@ use log::{debug, error, info, warn};
 use prost::Message;
 use serde::Deserialize;
 use sqlx::{Error::RowNotFound, query_as, query_scalar};
+use time::{Date, Month, OffsetDateTime, UtcOffset};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
 
@@ -42,12 +43,55 @@ mod proto {
 struct AppProps {
     db_url: String,
     users: &'static [User],
+    tz: UtcOffset,
     chan: mpsc::Sender<oneshot::Sender<bool>>,
 }
 
+// The current month without a year, the whole year without a month
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Query {
-    since: i64,
+    year: Option<i32>,
+    month: Option<u8>,
+}
+
+fn resolve_period(query: &Query, tz: UtcOffset) -> error::Result<proto::Period> {
+    let (year, month) = match (query.year, query.month) {
+        (None, None) => {
+            let today = OffsetDateTime::now_utc().to_offset(tz).date();
+            (today.year(), Some(today.month()))
+        }
+        (Some(year), month) => (
+            year,
+            month
+                .map(Month::try_from)
+                .transpose()
+                .map_err(error::ErrorBadRequest)?,
+        ),
+        (None, Some(_)) => return Err(error::ErrorBadRequest("month without year")),
+    };
+    let first = |year, month| {
+        Date::from_calendar_date(year, month, 1)
+            .map(|d| d.midnight().assume_offset(tz).unix_timestamp())
+            .map_err(error::ErrorBadRequest)
+    };
+    let (since, until) = match month {
+        None => (
+            first(year, Month::January)?,
+            first(year + 1, Month::January)?,
+        ),
+        Some(Month::December) => (
+            first(year, Month::December)?,
+            first(year + 1, Month::January)?,
+        ),
+        Some(month) => (first(year, month)?, first(year, month.next())?),
+    };
+    Ok(proto::Period {
+        year,
+        month: month.map_or(0, u8::from).into(),
+        since,
+        until,
+    })
 }
 
 fn mapper(e: sqlx::Error) -> error::Error {
@@ -68,14 +112,16 @@ async fn kick(chan: &mpsc::Sender<oneshot::Sender<bool>>) -> error::Result<()> {
 }
 
 async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Responder> {
-    info!("request: since = {}", req.since);
+    let period = resolve_period(&req, data.tz)?;
+    info!("request: {:?}", period);
     kick(&data.chan).await?;
     let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
 
     let rows = query_as!(
         Record,
-        "SELECT * FROM Record WHERE time >= ? ORDER BY time",
-        req.since
+        "SELECT * FROM Record WHERE time >= ? AND time < ? ORDER BY time",
+        period.since,
+        period.until,
     )
     .fetch_all(&mut conn)
     .await
@@ -100,6 +146,7 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
                 name: u.name.clone(),
             })
             .collect(),
+        period: Some(period),
     };
     let resp = stats.encode_to_vec();
     debug!("encoded into {} bytes", resp.len());
@@ -172,6 +219,7 @@ fn parse_socket_addr(s: &OsStr) -> Option<SocketAddr> {
 #[derive(Deserialize)]
 pub struct Config {
     token: String,
+    tz: Option<(i8, i8, i8)>,
     #[serde(flatten)]
     lark: crate::lark::Config,
 }
@@ -192,11 +240,18 @@ async fn entry() -> std::io::Result<()> {
 
     let config: Config = serde_json::from_reader(BufReader::new(File::open(&args.config)?))?;
 
+    let tz = match config.tz {
+        Some((h, m, s)) => UtcOffset::from_hms(h, m, s).unwrap(),
+        None => UtcOffset::current_local_offset().unwrap(),
+    };
+    info!("using timezone {}", tz);
+
     let users = Box::new(users).leak();
     let db_url = format!("sqlite://{}", args.db_path);
     let (tx, rx) = mpsc::channel(3);
     let _task = spawn_local(worker(
         &*users,
+        tz,
         db_url.clone(),
         rx,
         args.interval,
@@ -208,6 +263,7 @@ async fn entry() -> std::io::Result<()> {
     let data = Data::new(AppProps {
         db_url,
         users: &*users,
+        tz,
         chan: tx,
     });
 
