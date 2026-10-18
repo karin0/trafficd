@@ -16,9 +16,4 @@ CREATE TABLE Meta (
     time  INTEGER NOT NULL
 );
 
-CREATE TABLE Month (
-    uid   INTEGER NOT NULL PRIMARY KEY,
-    sum   INTEGER NOT NULL
-);
-
 CREATE INDEX Record_time ON Record (time);

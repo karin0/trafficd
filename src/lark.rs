@@ -2,7 +2,7 @@ use anyhow::Result;
 use log::{Level, debug, error, info, log, trace, warn};
 use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection, query, query_scalar};
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
@@ -204,7 +204,6 @@ struct Sources<'a> {
 }
 
 async fn refresh(
-    tz: UtcOffset,
     db_url: &str,
     src: &Sources<'_>,
     reset: bool,
@@ -220,8 +219,7 @@ async fn refresh(
         .unwrap_or(0);
     trace!("refresh: last {:?}", last_time);
 
-    let dt = OffsetDateTime::now_utc().to_offset(tz);
-    let time = dt.unix_timestamp() as u64;
+    let time = OffsetDateTime::now_utc().unix_timestamp() as u64;
     trace!("refresh: start at {}", time);
 
     if time <= last_time {
@@ -253,45 +251,8 @@ async fn refresh(
 
     let mut trx = conn.begin().await?;
 
-    let month: u8 = dt.month().into();
-    let last_month = if last_time > 0 {
-        OffsetDateTime::from_unix_timestamp(last_time as i64)
-            .unwrap()
-            .to_offset(tz)
-            .month()
-            .into()
-    } else {
-        0
-    };
-    if month != last_month {
-        let r = query!("DELETE FROM Month")
-            .execute(&mut *trx)
-            .await?
-            .rows_affected();
-        warn!(
-            "refresh: month changed from {} to {}, deleted {} rows",
-            last_month, month, r
-        );
-    } else {
-        trace!("refresh: month is still {}", month);
-    }
-
-    let mut sum: BTreeMap<u64, u64> = BTreeMap::new();
     for (&tid, &(tx, rx)) in pending.iter() {
         ctx.update(&mut trx, tid, tx, rx).await?;
-        *sum.entry(tid >> 8).or_default() += tx + rx;
-    }
-
-    for (uid, sum) in sum {
-        let uid = uid as i64;
-        let sum = sum as i64;
-        query!(
-            "INSERT INTO Month (uid, sum) VALUES (?, ?) ON CONFLICT(uid) DO UPDATE SET sum = sum + excluded.sum",
-            uid,
-            sum,
-        )
-        .execute(&mut *trx)
-        .await?;
     }
 
     if ok {
@@ -332,7 +293,6 @@ pub struct Config {
 
 pub async fn worker(
     users: &[User],
-    tz: UtcOffset,
     db_url: String,
     mut chan: mpsc::Receiver<oneshot::Sender<bool>>,
     interval: u16,
@@ -351,7 +311,7 @@ pub async fn worker(
     let mut pending = Pending::new();
 
     loop {
-        let ok = if let Err(e) = refresh(tz, &db_url, &src, reset, &mut pending).await {
+        let ok = if let Err(e) = refresh(&db_url, &src, reset, &mut pending).await {
             error!("failed to refresh: {}", e);
             false
         } else {

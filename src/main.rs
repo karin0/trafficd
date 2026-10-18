@@ -9,10 +9,10 @@ use actix_web::web::{self, Data, Json};
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, guard, middleware};
 use anyhow::Result;
 use clap::Parser;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use prost::Message;
-use serde::Deserialize;
-use sqlx::{Error::RowNotFound, query_as, query_scalar};
+use serde::{Deserialize, Serialize};
+use sqlx::{query_as, query_scalar};
 use time::{Date, Month, OffsetDateTime, UtcOffset};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
@@ -153,30 +153,42 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
     Ok(HttpResponse::Ok().body(resp))
 }
 
+// The traffic of a user in the current month, which ends at until
+#[derive(Serialize)]
+struct MonthSum {
+    sum: i64,
+    until: i64,
+}
+
 #[actix_web::get("/{uid}")]
 async fn query_sum(req: web::Path<u32>, data: Data<AppProps>) -> error::Result<impl Responder> {
     let uid = req.into_inner();
-    info!("query sum for uid {}", uid);
+    let period = resolve_period(
+        &Query {
+            year: None,
+            month: None,
+        },
+        data.tz,
+    )?;
     kick(&data.chan).await?;
     let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
 
-    match query_scalar!("SELECT sum FROM Month WHERE uid = ? LIMIT 1", uid)
-        .fetch_one(&mut conn)
-        .await
-    {
-        Err(RowNotFound) => {
-            warn!("uid {} not found", uid);
-            Ok(HttpResponse::Ok().body("0"))
-        }
-        Err(e) => {
-            error!("query {}: {:?}", uid, e);
-            Err(mapper(e))
-        }
-        Ok(sum) => {
-            info!("uid {} has sum {}", uid, sum);
-            Ok(HttpResponse::Ok().body(format!("{}", sum)))
-        }
-    }
+    let sum = query_scalar!(
+        r#"SELECT coalesce(sum(tx + rx), 0) AS "sum!: i64" FROM Record
+        WHERE time >= ? AND time < ? AND tid >> 8 = ?"#,
+        period.since,
+        period.until,
+        uid,
+    )
+    .fetch_one(&mut conn)
+    .await
+    .map_err(mapper)?;
+    info!("uid {} has sum {}", uid, sum);
+
+    Ok(HttpResponse::Ok().json(MonthSum {
+        sum,
+        until: period.until,
+    }))
 }
 
 #[derive(Parser, Debug)]
@@ -251,7 +263,6 @@ async fn entry() -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel(3);
     let _task = spawn_local(worker(
         &*users,
-        tz,
         db_url.clone(),
         rx,
         args.interval,
