@@ -16,7 +16,6 @@ use sqlx::{Error::RowNotFound, query_as, query_scalar};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
 
-use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -91,19 +90,6 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
     .collect::<Vec<_>>();
     info!("collected {} rows", rows.len());
 
-    struct Month {
-        uid: i64,
-        sum: i64,
-    }
-    let month_sums = query_as!(Month, "SELECT uid, sum FROM Month")
-        .fetch_all(&mut conn)
-        .await
-        .map_err(mapper)?
-        .into_iter()
-        .map(|m: Month| (m.uid as u32, m.sum as u64))
-        .collect::<BTreeMap<_, _>>();
-    debug!("collected {} month sums", month_sums.len());
-
     let stats = proto::TrafficStats {
         rows,
         users: data
@@ -112,7 +98,6 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
             .map(|u| proto::User {
                 uid: u.uid,
                 name: u.name.clone(),
-                month_sum: month_sums.get(&u.uid).copied().unwrap_or(0),
             })
             .collect(),
     };
