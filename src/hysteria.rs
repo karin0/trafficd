@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Result, anyhow};
-use awc::{Client, ClientBuilder, http::header};
+use anyhow::Result;
+use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -10,7 +11,6 @@ pub struct Config {
     url: String,
 }
 
-#[derive(Default)]
 pub struct Source {
     client: Client,
     url: String,
@@ -24,27 +24,30 @@ pub struct Traffic {
 
 // https://v2.hysteria.network/zh/docs/advanced/Traffic-Stats-API/
 impl Source {
-    pub fn new(config: Config) -> Self {
-        Self {
-            client: ClientBuilder::new()
-                .add_default_header((header::AUTHORIZATION, config.secret))
-                .finish(),
+    pub fn new(config: Config) -> Result<Self> {
+        let mut secret = HeaderValue::from_str(&config.secret)?;
+        secret.set_sensitive(true);
+        Ok(Self {
+            client: Client::builder()
+                .default_headers(HeaderMap::from_iter([(AUTHORIZATION, secret)]))
+                .build()?,
             url: config.url,
-        }
-    }
-
-    async fn _traffic<U: AsRef<str>>(&self, url: U) -> Result<BTreeMap<String, Traffic>> {
-        match self.client.get(url.as_ref()).send().await {
-            Ok(mut r) => Ok(r.json().await?),
-            Err(e) => Err(anyhow!("SendRequestError: {}", e)),
-        }
+        })
     }
 
     pub async fn traffic(&self, reset: bool) -> Result<BTreeMap<String, Traffic>> {
-        if reset {
-            self._traffic(format!("{}?clear=1", self.url)).await
+        let url = if reset {
+            format!("{}?clear=1", self.url)
         } else {
-            self._traffic(&*self.url).await
-        }
+            self.url.clone()
+        };
+        Ok(self
+            .client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 }

@@ -195,16 +195,27 @@ fn collect<T: Iterator<Item = (u32, u64, u64)>>(
     }
 }
 
-struct Sources<'a> {
-    xray: &'a str,
-    xray_map: BTreeMap<&'a str, u32>,
+pub struct Sources {
+    xray: String,
+    xray_map: BTreeMap<&'static str, u32>,
     hysteria: hysteria::Source,
-    hysteria_map: BTreeMap<&'a str, u32>,
+    hysteria_map: BTreeMap<&'static str, u32>,
+}
+
+impl Sources {
+    pub fn new(users: &'static [User], config: Config) -> Result<Self> {
+        Ok(Self {
+            xray: config.xray.server,
+            xray_map: users.iter().map(|u| (u.name.as_str(), u.uid)).collect(),
+            hysteria: hysteria::Source::new(config.hysteria)?,
+            hysteria_map: users.iter().map(|u| (u.hysteria_user(), u.uid)).collect(),
+        })
+    }
 }
 
 async fn refresh(
     pool: &SqlitePool,
-    src: &Sources<'_>,
+    src: &Sources,
     reset: bool,
     pending: &mut Pending,
 ) -> Result<()> {
@@ -237,7 +248,7 @@ async fn refresh(
     };
 
     let (xray, hysteria) = tokio::join!(
-        ctx.refresh_xray(src.xray, &src.xray_map),
+        ctx.refresh_xray(&src.xray, &src.xray_map),
         ctx.refresh_hysteria(&src.hysteria, &src.hysteria_map)
     );
     let fetch_dt = begin.elapsed().as_millis();
@@ -291,21 +302,14 @@ pub struct Config {
 }
 
 pub async fn worker(
-    users: &[User],
+    src: Sources,
     pool: SqlitePool,
     mut chan: mpsc::Receiver<oneshot::Sender<bool>>,
     interval: u16,
     reset: bool,
-    config: Config,
 ) {
     let delay_millis = interval as u64 * 1000;
 
-    let src = Sources {
-        xray: &config.xray.server,
-        xray_map: BTreeMap::from_iter(users.iter().map(|u| (u.name.as_str(), u.uid))),
-        hysteria: hysteria::Source::new(config.hysteria),
-        hysteria_map: BTreeMap::from_iter(users.iter().map(|u| (u.hysteria_user(), u.uid))),
-    };
     let mut last_tx: Option<oneshot::Sender<bool>> = None;
     let mut pending = Pending::new();
 

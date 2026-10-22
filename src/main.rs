@@ -25,7 +25,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::db::connect;
-use crate::lark::worker;
+use crate::lark::{Sources, worker};
 use crate::users::{User, load_users};
 
 struct Record {
@@ -256,24 +256,24 @@ async fn entry() -> std::io::Result<()> {
     };
     info!("using timezone {}", tz);
 
-    let users = Box::new(users).leak();
+    let users: &'static [User] = users.leak();
     let pool = connect(&format!("sqlite://{}", args.db_path))
         .await
         .map_err(std::io::Error::other)?;
     let (tx, rx) = mpsc::channel(3);
+    let sources = Sources::new(users, config.lark).map_err(std::io::Error::other)?;
     let _task = spawn_local(worker(
-        &*users,
+        sources,
         pool.clone(),
         rx,
         args.interval,
         !args.no_reset,
-        config.lark,
     ));
 
     let has_auth: bool = !args.no_auth;
     let data = Data::new(AppProps {
         pool,
-        users: &*users,
+        users,
         tz,
         chan: tx,
     });
