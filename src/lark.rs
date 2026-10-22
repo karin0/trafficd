@@ -17,7 +17,7 @@ const KIND_XRAY: u8 = 0;
 const KIND_HYSTERIA: u8 = 1;
 
 fn encode_tid(uid: u32, kind: u8) -> u64 {
-    ((uid as u64) << 8) | kind as u64
+    (u64::from(uid) << 8) | u64::from(kind)
 }
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -61,18 +61,14 @@ impl RefreshContext {
                 query_scalar!("SELECT time FROM Last WHERE tid = ? LIMIT 1", tid)
                     .fetch_optional(&mut *conn)
                     .await?
-                    .map(|x| x.try_into().unwrap())
-                    .unwrap_or(0);
-            trace!("update: {}: last {:?}", tid, tid_last_time);
+                    .map_or(0, |x| x.try_into().unwrap());
+            trace!("update: {tid}: last {tid_last_time:?}");
 
             if tid_last_time < last_time {
                 // Flush a zero to Record first
-                trace!(
-                    "update: {}: last {} < {}, inserting zeros",
-                    tid, tid_last_time, last_time
-                );
+                trace!("update: {tid}: last {tid_last_time} < {last_time}, inserting zeros");
 
-                let last_time = last_time as i64;
+                let last_time = last_time.cast_signed();
                 query!(
                     "INSERT INTO Record (tid, time, tx, rx) VALUES (?, ?, 0, 0)",
                     tid,
@@ -84,7 +80,7 @@ impl RefreshContext {
         }
 
         // Update Last
-        trace!("update: {}: updating last {}", tid, time);
+        trace!("update: {tid}: updating last {time}");
         query!(
             "INSERT OR REPLACE INTO Last (tid, time) VALUES (?, ?)",
             tid,
@@ -94,7 +90,7 @@ impl RefreshContext {
         .await?;
 
         // Insert Record
-        trace!("update: {}: inserting {} {} {}", tid, time, tx, rx);
+        trace!("update: {tid}: inserting {time} {tx} {rx}");
         query!(
             "INSERT INTO Record (tid, time, tx, rx) VALUES (?, ?, ?, ?)",
             tid,
@@ -117,7 +113,7 @@ impl RefreshContext {
         name_map: &BTreeMap<&str, u32>,
     ) -> Result<impl Iterator<Item = (u32, u64, u64)> + use<>> {
         let res = timeout(FETCH_TIMEOUT, xray::query(server, self.reset)).await??;
-        debug!("refresh_xray: got {:?}", res);
+        debug!("refresh_xray: got {res:?}");
 
         let mut map: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
         for stat in res.iter() {
@@ -142,10 +138,10 @@ impl RefreshContext {
                     }
                 }
             } else {
-                error!("refresh_xray: unknown email in stat {:?}", stat);
+                error!("refresh_xray: unknown email in stat {stat:?}");
             }
         }
-        trace!("refresh_xray: parsed {:?}", map);
+        trace!("refresh_xray: parsed {map:?}");
 
         Ok(map.into_iter().map(|(uid, (tx, rx))| (uid, tx, rx)))
     }
@@ -156,17 +152,14 @@ impl RefreshContext {
         uid_map: &'a BTreeMap<&str, u32>,
     ) -> Result<impl Iterator<Item = (u32, u64, u64)> + use<'a>> {
         let res = timeout(FETCH_TIMEOUT, src.traffic(self.reset)).await??;
-        debug!("refresh_hysteria: got {:?}", res);
+        debug!("refresh_hysteria: got {res:?}");
 
-        Ok(res.into_iter().flat_map(|(user, traffic)| {
+        Ok(res.into_iter().filter_map(|(user, traffic)| {
             uid_map
                 .get(user.as_str())
                 .map(|uid| (*uid, traffic.tx, traffic.rx))
                 .or_else(|| {
-                    error!(
-                        "refresh_hysteria: bad user {:?} with traffic {:?}",
-                        user, traffic
-                    );
+                    error!("refresh_hysteria: bad user {user:?} with traffic {traffic:?}");
                     None
                 })
         }))
@@ -189,7 +182,7 @@ fn collect<T: Iterator<Item = (u32, u64, u64)>>(
             true
         }
         Err(e) => {
-            error!("Failed to refresh {}: {}", title, e);
+            error!("Failed to refresh {title}: {e}");
             false
         }
     }
@@ -225,12 +218,11 @@ async fn refresh(
     let last_time = query_scalar!("SELECT time FROM Meta LIMIT 1")
         .fetch_optional(&mut *conn)
         .await?
-        .map(|x| x.try_into().unwrap())
-        .unwrap_or(0);
-    trace!("refresh: last {:?}", last_time);
+        .map_or(0, |x| x.try_into().unwrap());
+    trace!("refresh: last {last_time:?}");
 
-    let time = OffsetDateTime::now_utc().unix_timestamp() as u64;
-    trace!("refresh: start at {}", time);
+    let time = OffsetDateTime::now_utc().unix_timestamp().cast_unsigned();
+    trace!("refresh: start at {time}");
 
     if time <= last_time {
         warn!("refresh: too soon");
@@ -308,14 +300,14 @@ pub async fn worker(
     interval: u16,
     reset: bool,
 ) {
-    let delay_millis = interval as u64 * 1000;
+    let delay_millis = u64::from(interval) * 1000;
 
     let mut last_tx: Option<oneshot::Sender<bool>> = None;
     let mut pending = Pending::new();
 
     loop {
         let ok = if let Err(e) = refresh(&pool, &src, reset, &mut pending).await {
-            error!("failed to refresh: {}", e);
+            error!("failed to refresh: {e}");
             false
         } else {
             true
@@ -323,9 +315,9 @@ pub async fn worker(
 
         if let Some(tx) = last_tx.take() {
             if let Err(e) = tx.send(ok) {
-                error!("failed to respond: {}", e);
+                error!("failed to respond: {e}");
             } else {
-                debug!("responded {} to request", ok);
+                debug!("responded {ok} to request");
             }
         }
 
@@ -333,27 +325,29 @@ pub async fn worker(
         let mut cnt = 0;
         while let Ok(tx) = chan.try_recv() {
             if let Err(e) = tx.send(ok) {
-                error!("failed to send: {}", e);
+                error!("failed to send: {e}");
             }
             cnt += 1;
         }
         if cnt > 0 {
-            info!("cleared {} requests", cnt);
+            info!("cleared {cnt} requests");
         }
 
-        let t = SystemTime::now()
+        let t: u64 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64;
+            .as_millis()
+            .try_into()
+            .unwrap();
 
         let dt = delay_millis - t % delay_millis;
         debug!("sleeping for {} ms from {} to {}", dt, t, t + dt);
 
         tokio::select! {
-            _ = sleep(Duration::from_millis(dt)) => {}
+            () = sleep(Duration::from_millis(dt)) => {}
             req = chan.recv() => {
                 if let Some(tx) = req {
-                    trace!("woke from request {:?}", tx);
+                    trace!("woke from request {tx:?}");
                     last_tx = Some(tx);
                 } else {
                     error!("channel closed");

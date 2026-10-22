@@ -28,6 +28,12 @@ pretty_env_logger = { git = "https://github.com/karin0/pretty-env-logger.git" }
 [build-dependencies]
 prost-build = "0.14.1"
 
+[lints.rust]
+warnings = 'deny'
+
+[lints.clippy]
+pedantic = { level = 'warn', priority = -1 }
+
 [profile.release]
 strip = true
 lto = true
