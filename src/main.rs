@@ -95,7 +95,7 @@ fn resolve_period(query: &Query, tz: UtcOffset) -> error::Result<proto::Period> 
 }
 
 fn mapper(e: sqlx::Error) -> error::Error {
-    error!("sql error: {:?}", e);
+    error!("sql error: {e:?}");
     error::ErrorInternalServerError(e)
 }
 
@@ -113,7 +113,7 @@ async fn kick(chan: &mpsc::Sender<oneshot::Sender<bool>>) -> error::Result<()> {
 
 async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Responder> {
     let period = resolve_period(&req, data.tz)?;
-    info!("request: {:?}", period);
+    info!("request: {period:?}");
     kick(&data.chan).await?;
 
     let rows = query_as!(
@@ -127,10 +127,10 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
     .map_err(mapper)?
     .into_iter()
     .map(|row| proto::Row {
-        tid: row.tid as u64,
-        time: row.time as u64,
-        tx: row.tx as u64,
-        rx: row.rx as u64,
+        tid: row.tid.cast_unsigned(),
+        time: row.time.cast_unsigned(),
+        tx: row.tx.cast_unsigned(),
+        rx: row.rx.cast_unsigned(),
     })
     .collect::<Vec<_>>();
     info!("collected {} rows", rows.len());
@@ -181,7 +181,7 @@ async fn query_sum(req: web::Path<u32>, data: Data<AppProps>) -> error::Result<i
     .fetch_one(&data.pool)
     .await
     .map_err(mapper)?;
-    info!("uid {} has sum {}", uid, sum);
+    info!("uid {uid} has sum {sum}");
 
     Ok(HttpResponse::Ok().json(MonthSum {
         sum,
@@ -236,13 +236,13 @@ pub struct Config {
 
 async fn entry() -> std::io::Result<()> {
     let args = Cli::parse();
-    info!("running with {:?}", args);
+    info!("running with {args:?}");
 
     let users = load_users(&args.json_path);
     info!("found {} users", users.len());
 
     if let Some(mode) = args.umask {
-        info!("setting umask to {:#o}", mode);
+        info!("setting umask to {mode:#o}");
         unsafe {
             libc::umask(mode);
         }
@@ -254,7 +254,7 @@ async fn entry() -> std::io::Result<()> {
         Some((h, m, s)) => UtcOffset::from_hms(h, m, s).unwrap(),
         None => UtcOffset::current_local_offset().unwrap(),
     };
-    info!("using timezone {}", tz);
+    info!("using timezone {tz}");
 
     let users: &'static [User] = users.leak();
     let pool = connect(&format!("sqlite://{}", args.db_path))

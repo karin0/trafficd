@@ -18,14 +18,18 @@ pub fn load_users(json_path: &Path) -> Vec<User> {
     users
         .into_iter()
         .map(|(name, user)| {
-            let uid = user["id"].as_u64().unwrap() as u32;
+            let id = u32::try_from(user["id"].as_u64().unwrap()).unwrap();
             let Value::Object(mut user) = user else {
-                panic!("Invalid user: {:?}", user);
+                panic!("Invalid user: {user:?}");
             };
             let Value::String(uuid) = user.get_mut("uuid").unwrap().take() else {
-                panic!("Invalid uuid: {:?}", user);
+                panic!("Invalid uuid: {user:?}");
             };
-            User { uid, name, uuid }
+            User {
+                uid: id,
+                name,
+                uuid,
+            }
         })
         .collect()
 }
