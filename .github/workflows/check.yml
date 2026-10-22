@@ -1,0 +1,21 @@
+name: check
+on:
+  push:
+    paths-ignore:
+      - README.md
+  pull_request:
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler sqlite3
+      - run: rustup toolchain install stable --profile minimal -c clippy,rustfmt
+      # The sqlx query macros check the queries against this database at compile time.
+      - run: sh create.sh
+        working-directory: sql
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets
+      - run: cargo test
