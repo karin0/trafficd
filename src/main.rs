@@ -12,7 +12,7 @@ use clap::Parser;
 use log::{debug, error, info};
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use sqlx::{query_as, query_scalar};
+use sqlx::{SqlitePool, query_as, query_scalar};
 use time::{Date, Month, OffsetDateTime, UtcOffset};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
@@ -41,7 +41,7 @@ mod proto {
 
 #[derive(Debug, Clone)]
 struct AppProps {
-    db_url: String,
+    pool: SqlitePool,
     users: &'static [User],
     tz: UtcOffset,
     chan: mpsc::Sender<oneshot::Sender<bool>>,
@@ -115,7 +115,6 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
     let period = resolve_period(&req, data.tz)?;
     info!("request: {:?}", period);
     kick(&data.chan).await?;
-    let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
 
     let rows = query_as!(
         Record,
@@ -123,7 +122,7 @@ async fn index(req: Json<Query>, data: Data<AppProps>) -> error::Result<impl Res
         period.since,
         period.until,
     )
-    .fetch_all(&mut conn)
+    .fetch_all(&data.pool)
     .await
     .map_err(mapper)?
     .into_iter()
@@ -171,7 +170,6 @@ async fn query_sum(req: web::Path<u32>, data: Data<AppProps>) -> error::Result<i
         data.tz,
     )?;
     kick(&data.chan).await?;
-    let mut conn = connect(&data.db_url, true).await.map_err(mapper)?;
 
     let sum = query_scalar!(
         r#"SELECT coalesce(sum(tx + rx), 0) AS "sum!: i64" FROM Record
@@ -180,7 +178,7 @@ async fn query_sum(req: web::Path<u32>, data: Data<AppProps>) -> error::Result<i
         period.until,
         uid,
     )
-    .fetch_one(&mut conn)
+    .fetch_one(&data.pool)
     .await
     .map_err(mapper)?;
     info!("uid {} has sum {}", uid, sum);
@@ -259,11 +257,13 @@ async fn entry() -> std::io::Result<()> {
     info!("using timezone {}", tz);
 
     let users = Box::new(users).leak();
-    let db_url = format!("sqlite://{}", args.db_path);
+    let pool = connect(&format!("sqlite://{}", args.db_path))
+        .await
+        .map_err(std::io::Error::other)?;
     let (tx, rx) = mpsc::channel(3);
     let _task = spawn_local(worker(
         &*users,
-        db_url.clone(),
+        pool.clone(),
         rx,
         args.interval,
         !args.no_reset,
@@ -272,7 +272,7 @@ async fn entry() -> std::io::Result<()> {
 
     let has_auth: bool = !args.no_auth;
     let data = Data::new(AppProps {
-        db_url,
+        pool,
         users: &*users,
         tz,
         chan: tx,

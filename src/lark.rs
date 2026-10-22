@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{Level, debug, error, info, log, trace, warn};
 use serde::Deserialize;
-use sqlx::{Connection, SqliteConnection, query, query_scalar};
+use sqlx::{Connection, SqliteConnection, SqlitePool, query, query_scalar};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, sleep, timeout};
@@ -9,7 +9,6 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::time::SystemTime;
 
-use crate::db::connect;
 use crate::hysteria;
 use crate::users::User;
 use crate::xray;
@@ -204,16 +203,16 @@ struct Sources<'a> {
 }
 
 async fn refresh(
-    db_url: &str,
+    pool: &SqlitePool,
     src: &Sources<'_>,
     reset: bool,
     pending: &mut Pending,
 ) -> Result<()> {
     let begin = Instant::now();
-    let mut conn = connect(db_url, false).await?;
+    let mut conn = pool.acquire().await?;
 
     let last_time = query_scalar!("SELECT time FROM Meta LIMIT 1")
-        .fetch_optional(&mut conn)
+        .fetch_optional(&mut *conn)
         .await?
         .map(|x| x.try_into().unwrap())
         .unwrap_or(0);
@@ -293,7 +292,7 @@ pub struct Config {
 
 pub async fn worker(
     users: &[User],
-    db_url: String,
+    pool: SqlitePool,
     mut chan: mpsc::Receiver<oneshot::Sender<bool>>,
     interval: u16,
     reset: bool,
@@ -311,7 +310,7 @@ pub async fn worker(
     let mut pending = Pending::new();
 
     loop {
-        let ok = if let Err(e) = refresh(&db_url, &src, reset, &mut pending).await {
+        let ok = if let Err(e) = refresh(&pool, &src, reset, &mut pending).await {
             error!("failed to refresh: {}", e);
             false
         } else {
