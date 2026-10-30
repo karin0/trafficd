@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
@@ -215,9 +216,20 @@ async fn refresh(
     let time = OffsetDateTime::now_utc().unix_timestamp().cast_unsigned();
     trace!("refresh: start at {time}");
 
-    if time <= last_time {
-        warn!("refresh: too soon");
-        return Ok(());
+    // Record is keyed by (time, tid), so a refresh in the second of the last one is skipped
+    match time.cmp(&last_time) {
+        Ordering::Equal => {
+            debug!("refresh: skipped in the second of the last refresh");
+            return Ok(());
+        }
+        Ordering::Less => {
+            warn!(
+                "refresh: clock is {} s behind the last refresh",
+                last_time - time
+            );
+            return Ok(());
+        }
+        Ordering::Greater => {}
     }
 
     let mut ctx = RefreshContext {
