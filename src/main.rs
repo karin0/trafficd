@@ -1,4 +1,3 @@
-mod db;
 mod hysteria;
 mod lark;
 mod users;
@@ -7,7 +6,7 @@ mod xray;
 use actix_cors::Cors;
 use actix_web::web::{self, Data, Json};
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, guard, middleware};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::{debug, error, info};
 use prost::Message;
@@ -23,7 +22,6 @@ use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use crate::db::connect;
 use crate::lark::{Sources, worker};
 use crate::users::{User, load_users};
 
@@ -38,7 +36,6 @@ mod proto {
     include!(concat!(env!("OUT_DIR"), "/traffic.proto.rs"));
 }
 
-#[derive(Debug, Clone)]
 struct AppProps {
     pool: SqlitePool,
     users: &'static [User],
@@ -213,17 +210,11 @@ struct Cli {
 }
 
 fn parse_socket_addr(s: &OsStr) -> Option<SocketAddr> {
-    if let Some(addr) = s.to_str() {
-        let addr: Result<SocketAddr, _> = addr.parse();
-        if let Ok(addr) = addr {
-            return Some(addr);
-        }
-    }
-    None
+    s.to_str()?.parse().ok()
 }
 
-fn env_var(key: &str) -> std::io::Result<String> {
-    env::var(key).map_err(|e| std::io::Error::other(format!("{key}: {e}")))
+fn env_var(key: &str) -> Result<String> {
+    env::var(key).with_context(|| key.to_owned())
 }
 
 fn parse_tz(tz: &str) -> Result<UtcOffset, time::error::Parse> {
@@ -233,19 +224,19 @@ fn parse_tz(tz: &str) -> Result<UtcOffset, time::error::Parse> {
     )
 }
 
-fn load_tz() -> std::io::Result<UtcOffset> {
-    match env::var("TRAFFICD_TZ") {
-        Ok(tz) => parse_tz(&tz).map_err(|e| std::io::Error::other(format!("TRAFFICD_TZ: {e}"))),
-        Err(VarError::NotPresent) => Ok(UtcOffset::current_local_offset().unwrap()),
-        Err(e) => Err(std::io::Error::other(format!("TRAFFICD_TZ: {e}"))),
-    }
+fn load_tz() -> Result<UtcOffset> {
+    Ok(match env::var("TRAFFICD_TZ") {
+        Ok(tz) => parse_tz(&tz)?,
+        Err(VarError::NotPresent) => UtcOffset::current_local_offset()?,
+        Err(e) => return Err(e.into()),
+    })
 }
 
-async fn entry() -> std::io::Result<()> {
+async fn entry() -> Result<()> {
     let args = Cli::parse();
     info!("running with {args:?}");
 
-    let users: &'static [User] = load_users(&args.json_path).leak();
+    let users: &'static [User] = load_users(&args.json_path)?.leak();
     info!("found {} users", users.len());
 
     if let Some(mode) = args.umask {
@@ -260,18 +251,15 @@ async fn entry() -> std::io::Result<()> {
     } else {
         Some(env_var("TRAFFICD_TOKEN")?.leak())
     };
-    let tz = load_tz()?;
+    let tz = load_tz().context("TRAFFICD_TZ")?;
     info!("using timezone {tz}");
     let hysteria = hysteria::Source::new(
         env_var("TRAFFICD_HYSTERIA_URL")?,
         &env_var("TRAFFICD_HYSTERIA_SECRET")?,
-    )
-    .map_err(std::io::Error::other)?;
+    )?;
     let sources = Sources::new(users, env_var("TRAFFICD_XRAY_SERVER")?, hysteria);
 
-    let pool = connect(&format!("sqlite://{}", args.db_path))
-        .await
-        .map_err(std::io::Error::other)?;
+    let pool = SqlitePool::connect(&format!("sqlite://{}", args.db_path)).await?;
     let (tx, rx) = mpsc::channel(3);
     let _task = spawn_local(worker(
         sources,
@@ -308,17 +296,17 @@ async fn entry() -> std::io::Result<()> {
     })
     .workers(1);
 
-    if let Some(addr) = parse_socket_addr(&args.bind) {
+    let server = if let Some(addr) = parse_socket_addr(&args.bind) {
         server.bind(addr)
     } else {
         server.bind_uds(args.bind)
-    }?
-    .run()
-    .await
+    }?;
+    server.run().await?;
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<()> {
     if env::var("RUST_LOG").is_err() {
         unsafe {
             env::set_var("RUST_LOG", "info,sqlx=error");

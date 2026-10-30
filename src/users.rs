@@ -1,37 +1,35 @@
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use serde_json::{Map, Value, from_reader};
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
-#[derive(Debug)]
 pub struct User {
     pub uid: u32,
     pub name: String,
     pub uuid: String,
 }
 
-pub fn load_users(json_path: &Path) -> Vec<User> {
-    let file = File::open(json_path).unwrap();
-    let reader = BufReader::new(file);
-    let users: Map<String, Value> = from_reader(reader).unwrap();
-    users
+#[derive(Deserialize)]
+struct Entry {
+    id: u32,
+    uuid: String,
+}
+
+pub fn load_users(json_path: &Path) -> Result<Vec<User>> {
+    let file = File::open(json_path).with_context(|| json_path.display().to_string())?;
+    let users: BTreeMap<String, Entry> = serde_json::from_reader(BufReader::new(file))
+        .with_context(|| json_path.display().to_string())?;
+    Ok(users
         .into_iter()
-        .map(|(name, user)| {
-            let id = u32::try_from(user["id"].as_u64().unwrap()).unwrap();
-            let Value::Object(mut user) = user else {
-                panic!("Invalid user: {user:?}");
-            };
-            let Value::String(uuid) = user.get_mut("uuid").unwrap().take() else {
-                panic!("Invalid uuid: {user:?}");
-            };
-            User {
-                uid: id,
-                name,
-                uuid,
-            }
+        .map(|(name, Entry { id, uuid })| User {
+            uid: id,
+            name,
+            uuid,
         })
-        .collect()
+        .collect())
 }
 
 impl User {
