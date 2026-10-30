@@ -1,12 +1,6 @@
 use anyhow::Result;
-use serde::Deserialize;
 use xray_core::Client;
 use xray_core::app::stats::command::{QueryStatsRequest, Stat as RawStat};
-
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    pub server: String,
-}
 
 #[derive(Debug)]
 pub struct Stat<'a> {

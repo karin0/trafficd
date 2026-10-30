@@ -1,6 +1,5 @@
 use anyhow::Result;
 use log::{Level, debug, error, info, log, trace, warn};
-use serde::Deserialize;
 use sqlx::{Connection, SqliteConnection, SqlitePool, query, query_scalar};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
@@ -196,13 +195,13 @@ pub struct Sources {
 }
 
 impl Sources {
-    pub fn new(users: &'static [User], config: Config) -> Result<Self> {
-        Ok(Self {
-            xray: config.xray.server,
+    pub fn new(users: &'static [User], xray: String, hysteria: hysteria::Source) -> Self {
+        Self {
+            xray,
             xray_map: users.iter().map(|u| (u.name.as_str(), u.uid)).collect(),
-            hysteria: hysteria::Source::new(config.hysteria)?,
+            hysteria,
             hysteria_map: users.iter().map(|u| (u.hysteria_user(), u.uid)).collect(),
-        })
+        }
     }
 }
 
@@ -285,12 +284,6 @@ async fn refresh(
     );
 
     Ok(())
-}
-
-#[derive(Deserialize)]
-pub struct Config {
-    pub xray: crate::xray::Config,
-    pub hysteria: crate::hysteria::Config,
 }
 
 pub async fn worker(

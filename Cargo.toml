@@ -22,7 +22,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 anyhow = "1"
 xray-core = "0.2"
-time = "0.3"
+time = { version = "0.3", features = ["macros", "parsing"] }
 pretty_env_logger = { git = "https://github.com/karin0/pretty-env-logger.git" }
 
 [build-dependencies]

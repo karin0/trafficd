@@ -13,14 +13,13 @@ use log::{debug, error, info};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqlitePool, query_as, query_scalar};
+use time::macros::format_description;
 use time::{Date, Month, OffsetDateTime, UtcOffset};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{LocalSet, spawn_local};
 
-use std::env;
+use std::env::{self, VarError};
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -211,9 +210,6 @@ struct Cli {
 
     #[clap(short, long, default_value = "300")]
     interval: u16,
-
-    #[clap(short, long, default_value = "config.json")]
-    config: PathBuf,
 }
 
 fn parse_socket_addr(s: &OsStr) -> Option<SocketAddr> {
@@ -226,19 +222,30 @@ fn parse_socket_addr(s: &OsStr) -> Option<SocketAddr> {
     None
 }
 
-#[derive(Deserialize)]
-pub struct Config {
-    token: String,
-    tz: Option<(i8, i8, i8)>,
-    #[serde(flatten)]
-    lark: crate::lark::Config,
+fn env_var(key: &str) -> std::io::Result<String> {
+    env::var(key).map_err(|e| std::io::Error::other(format!("{key}: {e}")))
+}
+
+fn parse_tz(tz: &str) -> Result<UtcOffset, time::error::Parse> {
+    UtcOffset::parse(
+        tz,
+        format_description!("[offset_hour sign:mandatory]:[offset_minute]"),
+    )
+}
+
+fn load_tz() -> std::io::Result<UtcOffset> {
+    match env::var("TRAFFICD_TZ") {
+        Ok(tz) => parse_tz(&tz).map_err(|e| std::io::Error::other(format!("TRAFFICD_TZ: {e}"))),
+        Err(VarError::NotPresent) => Ok(UtcOffset::current_local_offset().unwrap()),
+        Err(e) => Err(std::io::Error::other(format!("TRAFFICD_TZ: {e}"))),
+    }
 }
 
 async fn entry() -> std::io::Result<()> {
     let args = Cli::parse();
     info!("running with {args:?}");
 
-    let users = load_users(&args.json_path);
+    let users: &'static [User] = load_users(&args.json_path).leak();
     info!("found {} users", users.len());
 
     if let Some(mode) = args.umask {
@@ -248,20 +255,24 @@ async fn entry() -> std::io::Result<()> {
         }
     }
 
-    let config: Config = serde_json::from_reader(BufReader::new(File::open(&args.config)?))?;
-
-    let tz = match config.tz {
-        Some((h, m, s)) => UtcOffset::from_hms(h, m, s).unwrap(),
-        None => UtcOffset::current_local_offset().unwrap(),
+    let token: Option<&'static str> = if args.no_auth {
+        None
+    } else {
+        Some(env_var("TRAFFICD_TOKEN")?.leak())
     };
+    let tz = load_tz()?;
     info!("using timezone {tz}");
+    let hysteria = hysteria::Source::new(
+        env_var("TRAFFICD_HYSTERIA_URL")?,
+        &env_var("TRAFFICD_HYSTERIA_SECRET")?,
+    )
+    .map_err(std::io::Error::other)?;
+    let sources = Sources::new(users, env_var("TRAFFICD_XRAY_SERVER")?, hysteria);
 
-    let users: &'static [User] = users.leak();
     let pool = connect(&format!("sqlite://{}", args.db_path))
         .await
         .map_err(std::io::Error::other)?;
     let (tx, rx) = mpsc::channel(3);
-    let sources = Sources::new(users, config.lark).map_err(std::io::Error::other)?;
     let _task = spawn_local(worker(
         sources,
         pool.clone(),
@@ -270,7 +281,6 @@ async fn entry() -> std::io::Result<()> {
         !args.no_reset,
     ));
 
-    let has_auth: bool = !args.no_auth;
     let data = Data::new(AppProps {
         pool,
         users,
@@ -278,7 +288,6 @@ async fn entry() -> std::io::Result<()> {
         chan: tx,
     });
 
-    let token = &*Box::leak(Box::new(config.token));
     let server = HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
@@ -287,7 +296,7 @@ async fn entry() -> std::io::Result<()> {
             .max_age(0);
 
         let mut scope = web::scope("/traffic");
-        if has_auth {
+        if let Some(token) = token {
             scope = scope.guard(guard::Header("Authorization", token));
         }
 
@@ -323,4 +332,28 @@ async fn main() -> std::io::Result<()> {
     }
 
     LocalSet::new().run_until(entry()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tz_accepts_signed_hours_and_minutes() {
+        assert_eq!(
+            parse_tz("+08:00").unwrap(),
+            UtcOffset::from_hms(8, 0, 0).unwrap()
+        );
+        assert_eq!(
+            parse_tz("-09:30").unwrap(),
+            UtcOffset::from_hms(-9, -30, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_tz_rejects_other_forms() {
+        for tz in ["8", "08:00", "+8:00", "+08", "+08:00:00", ""] {
+            assert!(parse_tz(tz).is_err(), "{tz:?}");
+        }
+    }
 }

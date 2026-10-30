@@ -5,12 +5,6 @@ use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    secret: String,
-    url: String,
-}
-
 pub struct Source {
     client: Client,
     url: String,
@@ -24,14 +18,14 @@ pub struct Traffic {
 
 // https://v2.hysteria.network/zh/docs/advanced/Traffic-Stats-API/
 impl Source {
-    pub fn new(config: Config) -> Result<Self> {
-        let mut secret = HeaderValue::from_str(&config.secret)?;
+    pub fn new(url: String, secret: &str) -> Result<Self> {
+        let mut secret = HeaderValue::from_str(secret)?;
         secret.set_sensitive(true);
         Ok(Self {
             client: Client::builder()
                 .default_headers(HeaderMap::from_iter([(AUTHORIZATION, secret)]))
                 .build()?,
-            url: config.url,
+            url,
         })
     }
 

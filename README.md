@@ -8,19 +8,19 @@ Every `--interval` seconds, and before answering each request, it fetches the co
 
 ```sh
 (cd sql && sh create.sh)   # creates sql/traffic.db with the schema in create.sql
-trafficd <db path> <users.json> [-c config.json] [-b 127.0.0.1:10090 | -b <unix socket path>]
+trafficd <db path> <users.json> [-b 127.0.0.1:10090 | -b <unix socket path>]
 ```
 
 `users.json` maps each user name to an object with a numeric `id` and a `uuid`. A user matches the Xray stats of the emails whose part before `@` is the name, and the Hysteria user named by the part of the uuid before its first `-`.
 
-`config.json` holds:
+trafficd reads the rest of its configuration from these environment variables:
 
-| key | value |
+| variable | value |
 | --- | --- |
-| `token` | the `Authorization` header every request must carry, unless `-A` is given |
-| `tz` | an optional `[hours, minutes, seconds]` UTC offset that delimits months and years, the local offset by default |
-| `xray.server` | the gRPC URL of the Xray API |
-| `hysteria.url`, `hysteria.secret` | the Hysteria traffic stats API URL and its secret |
+| `TRAFFICD_TOKEN` | the `Authorization` header every request must carry, required unless `-A` is given |
+| `TRAFFICD_TZ` | an optional UTC offset such as `+08:00` that delimits months and years, the local offset by default |
+| `TRAFFICD_XRAY_SERVER` | the gRPC URL of the Xray API |
+| `TRAFFICD_HYSTERIA_URL`, `TRAFFICD_HYSTERIA_SECRET` | the Hysteria traffic stats API URL and its secret |
 
 ## API
 
