@@ -344,4 +344,45 @@ mod tests {
             assert!(parse_tz(tz).is_err(), "{tz:?}");
         }
     }
+
+    const CST: UtcOffset = time::macros::offset!(+8);
+
+    fn period(year: Option<i32>, month: Option<u8>) -> error::Result<proto::Period> {
+        resolve_period(&Query { year, month }, CST)
+    }
+
+    #[test]
+    fn resolve_period_selects_a_month_from_local_midnight() {
+        let p = period(Some(2026), Some(10)).unwrap();
+        assert_eq!((p.year, p.month), (2026, 10));
+        // 2026-10-01 and 2026-11-01 at 00:00 +08:00
+        assert_eq!((p.since, p.until), (1_790_784_000, 1_793_462_400));
+    }
+
+    #[test]
+    fn resolve_period_ends_december_at_the_next_year() {
+        let p = period(Some(2026), Some(12)).unwrap();
+        assert_eq!((p.since, p.until), (1_796_054_400, 1_798_732_800));
+    }
+
+    #[test]
+    fn resolve_period_selects_the_whole_year_without_a_month() {
+        let p = period(Some(2026), None).unwrap();
+        assert_eq!((p.year, p.month), (2026, 0));
+        assert_eq!((p.since, p.until), (1_767_196_800, 1_798_732_800));
+    }
+
+    #[test]
+    fn resolve_period_selects_the_current_month_without_a_year() {
+        let p = period(None, None).unwrap();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        assert!(p.month != 0 && p.since <= now && now < p.until, "{p:?}");
+    }
+
+    #[test]
+    fn resolve_period_rejects_a_month_without_a_year_or_out_of_range() {
+        assert!(period(None, Some(10)).is_err());
+        assert!(period(Some(2026), Some(0)).is_err());
+        assert!(period(Some(2026), Some(13)).is_err());
+    }
 }
