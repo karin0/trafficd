@@ -256,7 +256,8 @@ async fn entry() -> Result<()> {
     let hysteria = hysteria::Source::new(
         env_var("TRAFFICD_HYSTERIA_URL")?,
         &env_var("TRAFFICD_HYSTERIA_SECRET")?,
-    )?;
+    )
+    .context("TRAFFICD_HYSTERIA_SECRET")?;
     let xray =
         xray::Source::new(&env_var("TRAFFICD_XRAY_SERVER")?).context("TRAFFICD_XRAY_SERVER")?;
     let sources = Sources::new(users, xray, hysteria);
