@@ -19,7 +19,7 @@ trafficd reads the rest of its configuration from these environment variables:
 | --- | --- |
 | `TRAFFICD_TOKEN` | the `Authorization` header every request must carry, required unless `-A` is given |
 | `TRAFFICD_TZ` | an optional UTC offset such as `+08:00` that delimits months and years, the local offset by default |
-| `TRAFFICD_XRAY_SERVER` | the gRPC URL of the Xray API |
+| `TRAFFICD_XRAY_SERVER` | the `host:port` of the Xray gRPC API, without a scheme |
 | `TRAFFICD_HYSTERIA_URL`, `TRAFFICD_HYSTERIA_SECRET` | the Hysteria traffic stats API URL and its secret |
 
 ## API
