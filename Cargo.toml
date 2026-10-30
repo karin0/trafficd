@@ -30,7 +30,13 @@ warnings = 'deny'
 [lints.clippy]
 pedantic = { level = 'warn', priority = -1 }
 
+# A panic in the refresh worker task would otherwise leave the server running
+# without it, so every panic ends the process for the supervisor to restart.
+[profile.dev]
+panic = "abort"
+
 [profile.release]
+panic = "abort"
 strip = true
 lto = true
 codegen-units = 1
