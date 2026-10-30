@@ -2651,7 +2651,6 @@ dependencies = [
  "clap",
  "libc",
  "log",
- "once_cell",
  "pretty_env_logger",
  "prost 0.14.4",
  "prost-build 0.14.4",
