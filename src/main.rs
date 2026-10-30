@@ -257,7 +257,9 @@ async fn entry() -> Result<()> {
         env_var("TRAFFICD_HYSTERIA_URL")?,
         &env_var("TRAFFICD_HYSTERIA_SECRET")?,
     )?;
-    let sources = Sources::new(users, env_var("TRAFFICD_XRAY_SERVER")?, hysteria);
+    let xray =
+        xray::Source::new(&env_var("TRAFFICD_XRAY_SERVER")?).context("TRAFFICD_XRAY_SERVER")?;
+    let sources = Sources::new(users, xray, hysteria);
 
     let pool = SqlitePool::connect(&format!("sqlite://{}", args.db_path)).await?;
     let (tx, rx) = mpsc::channel(3);

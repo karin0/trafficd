@@ -108,10 +108,10 @@ impl RefreshContext {
 
     async fn refresh_xray(
         &self,
-        server: &str,
+        src: &xray::Source,
         name_map: &BTreeMap<&str, u32>,
     ) -> Result<impl Iterator<Item = (u32, u64, u64)> + use<>> {
-        let res = timeout(FETCH_TIMEOUT, xray::query(server, self.reset)).await??;
+        let res = timeout(FETCH_TIMEOUT, src.query(self.reset)).await??;
         debug!("refresh_xray: got {res:?}");
 
         let mut map: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
@@ -188,14 +188,14 @@ fn collect<T: Iterator<Item = (u32, u64, u64)>>(
 }
 
 pub struct Sources {
-    xray: String,
+    xray: xray::Source,
     xray_map: BTreeMap<&'static str, u32>,
     hysteria: hysteria::Source,
     hysteria_map: BTreeMap<&'static str, u32>,
 }
 
 impl Sources {
-    pub fn new(users: &'static [User], xray: String, hysteria: hysteria::Source) -> Self {
+    pub fn new(users: &'static [User], xray: xray::Source, hysteria: hysteria::Source) -> Self {
         Self {
             xray,
             xray_map: users.iter().map(|u| (u.name.as_str(), u.uid)).collect(),

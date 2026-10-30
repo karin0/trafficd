@@ -1,6 +1,9 @@
 use anyhow::Result;
-use xray_core::Client;
+use xray_core::app::stats::command::stats_service_client::StatsServiceClient;
 use xray_core::app::stats::command::{QueryStatsRequest, Stat as RawStat};
+use xray_core::tonic::transport::{Channel, Endpoint};
+
+pub struct Source(StatsServiceClient<Channel>);
 
 #[derive(Debug)]
 pub struct Stat<'a> {
@@ -12,19 +15,22 @@ pub struct Stat<'a> {
 #[derive(Debug)]
 pub struct Stats(Vec<RawStat>);
 
-pub async fn query(server: &str, reset: bool) -> Result<Stats> {
-    let req = QueryStatsRequest {
-        pattern: String::new(),
-        reset,
-    };
+impl Source {
+    // The channel connects on the first query and reconnects after a failure.
+    // tonic is built without TLS, so the https scheme connects in plaintext.
+    pub fn new(server: &str) -> Result<Self> {
+        let channel = Endpoint::try_from(format!("https://{server}"))?.connect_lazy();
+        Ok(Self(StatsServiceClient::new(channel)))
+    }
 
-    let r = Client::from_url(server)
-        .await?
-        .stats()
-        .query_stats(req)
-        .await?;
-
-    Ok(Stats(r.into_inner().stat))
+    pub async fn query(&self, reset: bool) -> Result<Stats> {
+        let req = QueryStatsRequest {
+            pattern: String::new(),
+            reset,
+        };
+        let r = self.0.clone().query_stats(req).await?;
+        Ok(Stats(r.into_inner().stat))
+    }
 }
 
 impl Stats {
