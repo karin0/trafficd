@@ -2649,7 +2649,6 @@ dependencies = [
  "actix-web",
  "anyhow",
  "clap",
- "libc",
  "log",
  "pretty_env_logger",
  "prost 0.14.4",

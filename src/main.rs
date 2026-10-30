@@ -193,9 +193,6 @@ struct Cli {
 
     json_path: PathBuf,
 
-    #[clap(short, long)]
-    umask: Option<u32>,
-
     #[clap(short = 'A', long)]
     no_auth: bool,
 
@@ -238,13 +235,6 @@ async fn entry() -> Result<()> {
 
     let users: &'static [User] = load_users(&args.json_path)?.leak();
     info!("found {} users", users.len());
-
-    if let Some(mode) = args.umask {
-        info!("setting umask to {mode:#o}");
-        unsafe {
-            libc::umask(mode);
-        }
-    }
 
     let token: Option<&'static str> = if args.no_auth {
         None
