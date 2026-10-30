@@ -3,7 +3,6 @@ mod lark;
 mod users;
 mod xray;
 
-use actix_cors::Cors;
 use actix_web::web::{self, Data, Json};
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, guard, middleware};
 use anyhow::{Context, Result};
@@ -270,12 +269,6 @@ async fn entry() -> Result<()> {
     });
 
     let server = HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_header()
-            .allow_any_method()
-            .max_age(0);
-
         let mut scope = web::scope("/traffic");
         if let Some(token) = token {
             scope = scope.guard(guard::Header("Authorization", token));
@@ -283,7 +276,6 @@ async fn entry() -> Result<()> {
 
         App::new()
             .wrap(middleware::Logger::default())
-            .wrap(cors)
             .app_data(data.clone())
             .service(scope.route("", web::post().to(index)).service(query_sum))
     })
