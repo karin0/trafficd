@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use crate::hysteria;
@@ -114,32 +114,7 @@ impl RefreshContext {
         let res = timeout(FETCH_TIMEOUT, src.query(self.reset)).await??;
         debug!("refresh_xray: got {res:?}");
 
-        let mut map: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
-        for stat in res.iter() {
-            if let Some(uid) = name_map.get(User::name_from_xray_email(stat.email)) {
-                match map.entry(*uid) {
-                    Entry::Vacant(e) => {
-                        if stat.is_tx {
-                            e.insert((stat.value, 0));
-                        } else {
-                            e.insert((0, stat.value));
-                        }
-                    }
-                    Entry::Occupied(mut e) => {
-                        let (tx, rx) = e.get_mut();
-                        if stat.is_tx {
-                            assert_eq!(*tx, 0);
-                            *tx = stat.value;
-                        } else {
-                            assert_eq!(*rx, 0);
-                            *rx = stat.value;
-                        }
-                    }
-                }
-            } else {
-                error!("refresh_xray: unknown email in stat {stat:?}");
-            }
-        }
+        let map = sum_xray(res.iter(), name_map);
         trace!("refresh_xray: parsed {map:?}");
 
         Ok(map.into_iter().map(|(uid, (tx, rx))| (uid, tx, rx)))
@@ -163,6 +138,23 @@ impl RefreshContext {
                 })
         }))
     }
+}
+
+// Every email of a user adds to the user's traffic
+fn sum_xray<'a>(
+    stats: impl Iterator<Item = xray::Stat<'a>>,
+    name_map: &BTreeMap<&str, u32>,
+) -> BTreeMap<u32, (u64, u64)> {
+    let mut map: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
+    for stat in stats {
+        if let Some(uid) = name_map.get(User::name_from_xray_email(stat.email)) {
+            let (tx, rx) = map.entry(*uid).or_default();
+            *if stat.is_tx { tx } else { rx } += stat.value;
+        } else {
+            error!("refresh_xray: unknown email in stat {stat:?}");
+        }
+    }
+    map
 }
 
 fn collect<T: Iterator<Item = (u32, u64, u64)>>(
@@ -347,5 +339,31 @@ pub async fn worker(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sum_xray_adds_the_emails_of_a_user() {
+        let stat = |email, is_tx, value| xray::Stat {
+            email,
+            is_tx,
+            value,
+        };
+        let name_map = BTreeMap::from([("a", 1), ("b", 2)]);
+        let stats = [
+            stat("a@x", true, 1),
+            stat("a@y", true, 2),
+            stat("a@x", false, 4),
+            stat("b@x", false, 8),
+            stat("c@x", true, 16),
+        ];
+        assert_eq!(
+            sum_xray(stats.into_iter(), &name_map),
+            BTreeMap::from([(1, (3, 4)), (2, (0, 8))])
+        );
     }
 }
