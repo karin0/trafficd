@@ -192,9 +192,6 @@ struct Cli {
 
     json_path: PathBuf,
 
-    #[clap(short = 'A', long)]
-    no_auth: bool,
-
     #[clap(short, long, default_value = "127.0.0.1:10090")]
     bind: OsString,
 
@@ -235,11 +232,7 @@ async fn entry() -> Result<()> {
     let users: &'static [User] = load_users(&args.json_path)?.leak();
     info!("found {} users", users.len());
 
-    let token: Option<&'static str> = if args.no_auth {
-        None
-    } else {
-        Some(env_var("TRAFFICD_TOKEN")?.leak())
-    };
+    let token: &'static str = env_var("TRAFFICD_TOKEN")?.leak();
     let tz = load_tz().context("TRAFFICD_TZ")?;
     info!("using timezone {tz}");
     let hysteria = hysteria::Source::new(
@@ -269,11 +262,7 @@ async fn entry() -> Result<()> {
     });
 
     let server = HttpServer::new(move || {
-        let mut scope = web::scope("/traffic");
-        if let Some(token) = token {
-            scope = scope.guard(guard::Header("Authorization", token));
-        }
-
+        let scope = web::scope("/traffic").guard(guard::Header("Authorization", token));
         App::new()
             .wrap(middleware::Logger::default())
             .app_data(data.clone())
