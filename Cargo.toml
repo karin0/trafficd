@@ -6,6 +6,7 @@ edition = "2024"
 
 [dependencies]
 actix-web = { version = "4", default-features = false, features = ["macros"] }
+# Cargo.lock lists rsa (RUSTSEC-2023-0071) through sqlx-mysql, an optional dependency of sqlx-macros-core, and the build leaves it out without the mysql feature.
 sqlx = { version = "0.8", features = ["sqlite", "macros", "runtime-tokio"] }
 prost = "0.14.1"
 log = "0.4"
