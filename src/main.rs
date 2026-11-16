@@ -281,17 +281,7 @@ async fn entry() -> Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    if env::var("RUST_LOG").is_err() {
-        unsafe {
-            env::set_var("RUST_LOG", "info,sqlx=error");
-        }
-    }
-
-    if env::var("JOURNAL_STREAM").is_ok() {
-        pretty_env_logger::init();
-    } else {
-        pretty_env_logger::init_timed();
-    }
+    krr_logger::init!("info,sqlx=error")?;
 
     LocalSet::new().run_until(entry()).await
 }
